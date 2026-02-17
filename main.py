@@ -1,22 +1,40 @@
 import os
+import time
 from flask import Flask, jsonify, request
 from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync # ลองกลับมาใช้ตัวนี้อีกครั้ง
 
 app = Flask(__name__)
 
 def get_fotmob_data(target_url):
     with sync_playwright() as p:
-        # เปิด Browser แบบไม่ต้องใช้ Stealth ก่อน เพื่อให้รันผ่านชัวร์ๆ
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        # ใช้ Browser ตัวเต็ม (ไม่ใช้ headless-shell) เพื่อลดโอกาสโดนตรวจจับ
+        browser = p.chromium.launch(headless=True, args=[
+            "--no-sandbox",
+            "--disable-blink-features=AutomationControlled"
+        ])
+        
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080}
         )
+        
         page = context.new_page()
         
-        # ไปยัง URL ที่ส่งมาจาก Worker
+        # ใช้ Stealth เพื่อพรางตัวว่าเป็นคนจริงๆ
+        try:
+            stealth_sync(page)
+        except:
+            pass # ถ้ายัง import มีปัญหา ให้ข้ามไปก่อน
+            
+        # ไปที่หน้าเว็บหลักของ FotMob ก่อนหนึ่งรอบเพื่อสร้าง Cookie
+        page.goto("https://www.fotmob.com/", wait_until="networkidle")
+        time.sleep(2) # รอสักครู่ให้คุกกี้เซ็ตตัว
+        
+        # ค่อยไปที่ URL เป้าหมาย
         page.goto(target_url, wait_until="networkidle")
         
-        # ดึงข้อความ JSON จากหน้าเว็บ (FotMob API จะแสดงผลเป็น text ในหน้าจอ)
+        # ดึงเนื้อหา
         content = page.locator("body").inner_text()
         
         browser.close()
@@ -24,15 +42,13 @@ def get_fotmob_data(target_url):
 
 @app.route('/')
 def home():
-    return "FotMob Scraper is Live and Ready!"
+    return "FotMob Scraper is Active"
 
 @app.route('/scrape', methods=['GET'])
 def scrape():
-    # รับ URL จาก Cloudflare Worker ผ่าน parameter ?url=...
     url = request.args.get('url')
     if not url:
-        return jsonify({"error": "Please provide a URL"}), 400
-
+        return jsonify({"error": "No URL"}), 400
     try:
         data = get_fotmob_data(url)
         return data, 200, {'Content-Type': 'application/json'}
@@ -40,6 +56,5 @@ def scrape():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    # สำคัญ: Render บังคับให้ใช้ Port ที่เขากำหนดให้
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
